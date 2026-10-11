@@ -37,7 +37,17 @@ public class Middleware {
             }
 
 
-            ex.getResponseHeaders().set("Access-Control-Allow-Origin", Config.get("CORS_ORIGIN"));
+            // CORS allow-list: the request's Origin must exactly match one of the
+            // configured origins (comma-separated in CORS_ORIGIN). Echoing the
+            // request's own origin (instead of a wildcard) keeps credentials
+            // working and lets multiple frontends (Vercel + Netlify) be allowed
+            // explicitly.
+            String requestOrigin = ex.getRequestHeaders().getFirst("Origin");
+            String allowedOrigins = Config.get("CORS_ORIGIN");
+            boolean originAllowed = requestOrigin != null && java.util.Arrays.asList(allowedOrigins.split(","))
+                    .stream().map(String::trim).anyMatch(o -> o.equalsIgnoreCase(requestOrigin));
+            ex.getResponseHeaders().set("Access-Control-Allow-Origin",
+                    originAllowed ? requestOrigin : allowedOrigins.split(",")[0].trim());
             ex.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
             ex.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key");
             ex.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
