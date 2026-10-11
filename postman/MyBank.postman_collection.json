@@ -1,16 +1,18 @@
 {
   "info": {
     "_postman_id": "8f3a1d64-6c2e-4f7a-9b1d-2f5a8c4e7d90",
-    "name": "MyBank API — Setup & Drills",
-    "description": "Setup + core drills for MyBank on a fresh machine.\n\nSETUP:\n1. Create an Environment (Environments panel → +) with variable `paystackKey` = the SAME sk_test key as backend/.env — and SELECT it top-right.\n2. Backend must be running on :8080.\n\nRUN ORDER:\nHealth → Login (OTP from server console) → Verify Login OTP (tokens auto-save) → Submit KYC (verifies user) → Dashboard (saves vaNumber) → then any drill.\n\nWebhooks need `paystackKey` set correctly, or signatures fail with 401.",
+    "name": "MyBank API — Complete (All Endpoints)",
+    "description": "FULL- surface drill suite for MyBank — every route, every security property.\n\nSETUP:\n1. Create an Environment with `paystackKey` = the SAME sk_test key as backend/.env, and SELECT it top-right.\n2. Backend running on :8080 (or set baseUrl env var to the deployed Render URL).\n\nRUN ORDER:\nHealth → Login (OTP from server console) → Verify Login OTP (tokens auto-save) → Submit KYC → Dashboard (saves vaNumber) → Money Movement → KYC re-check → Reports → Notifications → Webhooks → User B (cross-user drills) → Security.\n\nNOTES:\n- OTPs print in the server console ([TEST OTP] lines). Rate limit: 3 per 15 min per purpose.\n- Idempotency keys are minted once per variable (mint-if-unset): resending the same request = replay drill. 'Reset Idempotency Keys' clears them for fresh payments.\n- Ada's password variable is Password123 (seed + app both use it).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     { "key": "baseUrl", "value": "http://localhost:8080" },
     { "key": "email", "value": "ada@test.com" },
-    { "key": "password", "value": "password" },
+    { "key": "password", "value": "Password123" },
     { "key": "pin", "value": "1234" },
-    { "key": "receiverId", "value": "2" }
+    { "key": "receiverId", "value": "2" },
+    { "key": "newPassword", "value": "Password123" },
+    { "key": "paystackKey", "value": "sk_test_REPLACE_WITH_SAME_KEY_AS_BACKEND_ENV" }
   ],
   "item": [
     {
@@ -19,11 +21,21 @@
         {
           "name": "Health",
           "request": { "method": "GET", "url": "{{baseUrl}}/api/health",
-            "description": "No auth. Backend up + database reachable = 200 {status:ok}. Run this FIRST."
+            "description": "No auth. Backend up + database reachable = 200 {status:ok}. Run FIRST."
           },
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
             "pm.test('200 OK', () => pm.response.to.have.status(200));",
             "pm.test('status ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+          ] } }]
+        },
+        {
+          "name": "Reset Idempotency Keys",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/health",
+            "description": "Run BEFORE starting a genuinely NEW payment. Clears stored keys so the next internal/external/bill request mints fresh ones. (Resending a money request WITHOUT this = replay drill → 'already processed'.)"
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "['idemInternal','idemExternal','idemBill'].forEach(k => pm.collectionVariables.unset(k));",
+            "pm.test('idempotency keys cleared', () => true);"
           ] } }]
         }
       ]
@@ -53,7 +65,7 @@
         {
           "name": "Verify OTP (signup)",
           "request": { "method": "POST", "url": "{{baseUrl}}/api/auth/verify-otp",
-            "description": "Replace REPLACE_ME with the signup OTP from the server console.",
+            "description": "Replace REPLACE_ME with the signup OTP from the server console. Resending = OTP single-use drill → 400 (already claimed).",
             "body": { "mode": "raw", "raw": "{\n  \"userId\": {{newUserId}},\n  \"code\": \"REPLACE_ME\"\n}", "options": { "raw": { "language": "json" } } }
           },
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
@@ -64,7 +76,7 @@
         {
           "name": "Login (step 1 — password)",
           "request": { "method": "POST", "url": "{{baseUrl}}/api/auth/login",
-            "description": "Logs in Ada by default. Wrong password → 401 'Invalid details'. Triggers a login OTP → server console. To verify KYC for another user (e.g. Tunde), change the email here first — KYC verifies whoever's token is saved.",
+            "description": "Logs in Ada by default. Wrong password → 401 'Invalid details'. Triggers a login OTP → server console. To act as another user (e.g. Tunde for KYC), change the email here first.",
             "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}", "options": { "raw": { "language": "json" } } }
           },
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
@@ -90,7 +102,7 @@
         {
           "name": "Refresh (rotation)",
           "request": { "method": "POST", "url": "{{baseUrl}}/api/auth/refresh",
-            "description": "Rotates the pair and auto-saves the NEW tokens. Re-running with the now-dead token = replay drill → 401.",
+            "description": "Rotates the pair and auto-saves the NEW tokens. Re-running with the now-dead token = replay drill → 401 (grace window < 60s = benign; older = theft: all sessions killed).",
             "body": { "mode": "raw", "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}", "options": { "raw": { "language": "json" } } }
           },
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
@@ -99,11 +111,45 @@
             "pm.collectionVariables.set('accessToken', j.accessToken);",
             "pm.collectionVariables.set('refreshToken', j.refreshToken);"
           ] } }]
+        },
+        {
+          "name": "Set PIN",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/auth/set-pin",
+            "description": "Sets the transaction PIN (idempotent for the same value). For a NEW user this is the mandatory funnel step.",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "body": { "mode": "raw", "raw": "{\n  \"pin\": \"{{pin}}\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 PIN set', () => pm.response.to.have.status(200));"
+          ] } }]
+        },
+        {
+          "name": "Change Password ⚠️ (stateful — read note)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/auth/change-password",
+            "description": "⚠️ STATEFUL DRILL: changes the password AND logs out everywhere (token_version bump + all refresh tokens revoked). To revert: Login with the NEW password, then run this again swapping old/new. Current defaults assume the password is Password123.",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "body": { "mode": "raw", "raw": "{\n  \"oldPassword\": \"{{password}}\",\n  \"newPassword\": \"NewDrill123\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 changed', () => pm.response.to.have.status(200));",
+            "pm.test('new tokens issued', () => pm.expect(pm.response.json()).to.have.property('accessToken'));"
+          ] } }]
+        },
+        {
+          "name": "Logout",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/auth/logout",
+            "description": "Revokes the current refresh token. The access token stays valid until expiry (by design — stateless).",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "body": { "mode": "raw", "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 logged out', () => pm.response.to.have.status(200));"
+          ] } }]
         }
       ]
     },
     {
-      "name": "2 · Account",
+      "name": "2 · KYC & Account",
       "item": [
         {
           "name": "Submit KYC (verifies logged-in user) ⭐",
@@ -129,6 +175,27 @@
             "if (j.virtualAccount) pm.collectionVariables.set('vaNumber', j.virtualAccount.account_number);",
             "pm.test('hasPin flag present', () => pm.expect(j.user).to.have.property('hasPin'));"
           ] } }]
+        },
+        {
+          "name": "List Banks",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/banks",
+            "description": "Provider-backed bank list (4 mock banks in demo mode).",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }]
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 bank list', () => pm.response.to.have.status(200));"
+          ] } }]
+        },
+        {
+          "name": "Resolve External Account",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/banks/resolve?account_number=1234567890&bank_code=999",
+            "description": "Mock resolves any 10-digit account → this is the name the Send page locks before you confirm.",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }]
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 resolved', () => pm.response.to.have.status(200));",
+            "pm.test('accountName present', () => pm.expect(pm.response.json()).to.have.property('accountName'));"
+          ] } }]
         }
       ]
     },
@@ -138,7 +205,7 @@
         {
           "name": "Request OTP (transfer)",
           "request": { "method": "POST", "url": "{{baseUrl}}/api/otp/request",
-            "description": "OTP prints in the server console ([TEST OTP]). Limit: 3 per 15 min per purpose → 429 after. For a beneficiary-purpose OTP, change the body purpose to 'beneficiary'.",
+            "description": "OTP prints in the server console ([TEST OTP]). Limit: 3 per 15 min per purpose → 429 after. For a beneficiary-purpose OTP, change the body purpose to 'beneficiary' (separate limit bucket).",
             "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
             "body": { "mode": "raw", "raw": "{\n  \"purpose\": \"transfer\"\n}", "options": { "raw": { "language": "json" } } }
           },
@@ -149,32 +216,42 @@
         {
           "name": "Internal Transfer",
           "request": { "method": "POST", "url": "{{baseUrl}}/api/transfers/internal",
-            "description": "Ada → user {{receiverId}} (Tunde = 2). RESENDING without regenerating = replay drill → 'already processed'.",
+            "description": "Ada → user {{receiverId}} (Tunde = 2). Key minted once per variable: RESENDING without 'Reset Idempotency Keys' = replay drill → 'already processed'.",
             "header": [
               { "key": "Authorization", "value": "Bearer {{accessToken}}" },
-              { "key": "Idempotency-Key", "value": "idem-int-{{$timestamp}}" }
+              { "key": "Idempotency-Key", "value": "{{idemInternal}}" }
             ],
             "body": { "mode": "raw", "raw": "{\n  \"receiverId\": {{receiverId}},\n  \"amountKobo\": 10000,\n  \"pin\": \"{{pin}}\",\n  \"otpCode\": \"REPLACE_ME\",\n  \"narration\": \"postman drill\"\n}", "options": { "raw": { "language": "json" } } }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('200 successful', () => pm.response.to.have.status(200));",
-            "pm.test('balanceAfter present', () => pm.expect(pm.response.json()).to.have.property('balanceAfter'));"
-          ] } }]
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "if (!pm.collectionVariables.get('idemInternal')) pm.collectionVariables.set('idemInternal', 'idem-int-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 successful', () => pm.response.to.have.status(200));",
+              "pm.test('balanceAfter present', () => pm.expect(pm.response.json()).to.have.property('balanceAfter'));"
+            ] } }
+          ]
         },
         {
           "name": "External Transfer",
           "request": { "method": "POST", "url": "{{baseUrl}}/api/transfers/external",
-            "description": "Payout → pending. Fee ₦50 splits into pool:fees. Watchdog resolves the verdict.",
+            "description": "Payout → pending. Fee ₦50 splits into pool:fees. Watchdog resolves the verdict. Key minted once per variable.",
             "header": [
               { "key": "Authorization", "value": "Bearer {{accessToken}}" },
-              { "key": "Idempotency-Key", "value": "idem-ext-{{$timestamp}}" }
+              { "key": "Idempotency-Key", "value": "{{idemExternal}}" }
             ],
             "body": { "mode": "raw", "raw": "{\n  \"accountNumber\": \"1234567890\",\n  \"bankCode\": \"999\",\n  \"amountKobo\": 10000,\n  \"pin\": \"{{pin}}\",\n  \"otpCode\": \"REPLACE_ME\",\n  \"narration\": \"postman drill\"\n}", "options": { "raw": { "language": "json" } } }
           },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('200 pending', () => pm.response.to.have.status(200));",
-            "pm.test('status pending', () => pm.expect(pm.response.json().status).to.eql('pending'));"
-          ] } }]
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "if (!pm.collectionVariables.get('idemExternal')) pm.collectionVariables.set('idemExternal', 'idem-ext-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 pending', () => pm.response.to.have.status(200));",
+              "pm.test('status pending', () => pm.expect(pm.response.json().status).to.eql('pending'));"
+            ] } }
+          ]
         },
         {
           "name": "Pay Bill",
@@ -182,23 +259,199 @@
             "description": "Mock biller confirms in seconds (watch the server console for [BillWorker]). Billers: airtime|data|electricity|tv|cable.",
             "header": [
               { "key": "Authorization", "value": "Bearer {{accessToken}}" },
-              { "key": "Idempotency-Key", "value": "idem-bill-{{$timestamp}}" }
+              { "key": "Idempotency-Key", "value": "{{idemBill}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"biller\": \"airtime\",\n  \"customerRef\": \"08030000000\",\n  \"amountKobo\": 10000,\n  \"pin\": \"{{pin}}\",\n  \"otpCode\": \"REPLACE_ME\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "if (!pm.collectionVariables.get('idemBill')) pm.collectionVariables.set('idemBill', 'idem-bill-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 initiated', () => pm.response.to.have.status(200));"
+            ] } }
+          ]
+        },
+        {
+          "name": "Pay Bill (forced-FAIL drill — auto-reversal)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/bills/pay",
+            "description": "FIXED key 'fail-demo-001': the mock biller rejects references containing 'fail' → auto-reversal fires → money returns → receipt becomes 'reversed'. Run ONCE, then re-run to see 'Previous attempt failed — start a new payment' (409). Check History: a reversed ₦100 bill entry.",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Idempotency-Key", "value": "fail-demo-001" }
             ],
             "body": { "mode": "raw", "raw": "{\n  \"biller\": \"airtime\",\n  \"customerRef\": \"08030000000\",\n  \"amountKobo\": 10000,\n  \"pin\": \"{{pin}}\",\n  \"otpCode\": \"REPLACE_ME\"\n}", "options": { "raw": { "language": "json" } } }
           },
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('200 initiated', () => pm.response.to.have.status(200));"
+            "pm.test('200 initiated (will reverse)', () => pm.response.to.have.status(200));"
           ] } }]
         }
       ]
     },
     {
-      "name": "4 · Webhooks (Paystack)",
+      "name": "4 · Beneficiaries",
+      "item": [
+        {
+          "name": "List Beneficiaries",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/beneficiaries",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }]
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 list', () => pm.response.to.have.status(200));"
+          ] } }]
+        },
+        {
+          "name": "Resolve MyBank Account",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/beneficiaries/resolve?account_number={{vaNumber}}",
+            "description": "Resolves any MyBank account number to its owner (uses YOUR vaNumber — try another user's to see cross-user resolution; no enumeration leak).",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }]
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 resolved owner', () => pm.response.to.have.status(200));"
+          ] } }]
+        },
+        {
+          "name": "Add Beneficiary (beneficiary OTP)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/beneficiaries",
+            "description": "Needs a BENEFICIARY-purpose OTP: run Request OTP with the body purpose changed to 'beneficiary' (separate rate-limit bucket). Reusing a transfer-purpose code → 400 (purpose-tagging).",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Drill Beneficiary\",\n  \"bankCode\": \"999\",\n  \"accountNumber\": \"1234567890\",\n  \"otpCode\": \"REPLACE_ME\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 added', () => pm.response.to.have.status(200));"
+          ] } }]
+        }
+      ]
+    },
+    {
+      "name": "5 · Queries & Statements",
+      "item": [
+        {
+          "name": "Analytics (charts data)",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/me/analytics?months=6",
+            "description": "Monthly buckets (successful flows only), spending categories (schema-enforced column), top recipients, this-month-vs-3-month comparison.",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }]
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 analytics', () => pm.response.to.have.status(200));",
+            "const j = pm.response.json();",
+            "pm.test('months bucketed', () => pm.expect(j.months).to.be.an('array'));",
+            "pm.test('categories present', () => pm.expect(j).to.have.property('categories'));"
+          ] } }]
+        },
+        {
+          "name": "Transactions (filters)",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/transactions?limit=10&offset=0&type=debit&status=successful",
+            "description": "Server-side filtering with pagination. Try combinations: status=pending, search=, from/to dates.",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }]
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 list', () => pm.response.to.have.status(200));"
+          ] } }]
+        },
+        {
+          "name": "Download Statement (saves sealed text) ⭐",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/statements?from=2020-01-01&to=2030-12-31",
+            "description": "Wide range covers all data. Auto-saves the sealed CSV (Account Holder header + Signature + Public Key lines) for the verify requests. First run generates your Ed25519 keypair.",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }]
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 csv', () => pm.response.to.have.status(200));",
+            "const t = pm.response.text();",
+            "pm.collectionVariables.set('statementText', t);",
+            "pm.test('statement sealed', () => {",
+            "  pm.expect(t).to.include('Signature,');",
+            "  pm.expect(t).to.include('Public Key,');",
+            "  pm.expect(t).to.include('Account Holder,');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "Verify Statement (pristine → valid)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/statements/verify",
+            "description": "Verifies the SAVED statement → valid:true + accountHolder. Byte-exact: the Ed25519 signature covers the exact CSV bytes.",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "text/plain" }
+            ],
+            "body": { "mode": "raw", "raw": "{{statementText}}", "options": { "raw": { "language": "text" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 verification ran', () => pm.response.to.have.status(200));",
+            "pm.test('valid seal', () => pm.expect(pm.response.json().valid).to.eql(true));"
+          ] } }]
+        },
+        {
+          "name": "Tamper Statement + Verify (signature breaks)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/statements/verify",
+            "description": "TAMPER DRILL: prerequest inserts a FAKE transaction row into the saved statement, then verifies → valid:false ('Signature INVALID'). Proof that any alteration is detectable. Re-run Download Statement to restore the pristine text.",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "text/plain" }
+            ],
+            "body": { "mode": "raw", "raw": "{{statementText}}", "options": { "raw": { "language": "text" } } }
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "const t = pm.collectionVariables.get('statementText') || '';",
+              "const lines = t.split('\\n');",
+              "const idx = lines.findIndex(l => l.startsWith('Signature,'));",
+              "if (idx >= 0) lines.splice(idx, 0, '2026-01-01T00:00:00Z,FAKE-REF,debit,100,0,Tamper Drill,successful,999999');",
+              "pm.collectionVariables.set('statementText', lines.join('\\n'));"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 verification ran', () => pm.response.to.have.status(200));",
+              "pm.test('tamper DETECTED', () => pm.expect(pm.response.json().valid).to.eql(false));"
+            ] } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6 · Notifications",
+      "item": [
+        {
+          "name": "List Notifications (saves lastNotifId)",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/notifications",
+            "description": "Add ?unreadOnly=true for the badge-count variant.",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }]
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 list', () => pm.response.to.have.status(200));",
+            "const j = pm.response.json();",
+            "if (Array.isArray(j) && j.length) pm.collectionVariables.set('lastNotifId', j[0].id);"
+          ] } }]
+        },
+        {
+          "name": "Mark One Read",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/notifications/read-one",
+            "description": "Marks lastNotifId read — user-scoped (a forged id silently matches nothing).",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "body": { "mode": "raw", "raw": "{\n  \"id\": {{lastNotifId}}\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 success', () => pm.response.to.have.status(200));"
+          ] } }]
+        },
+        {
+          "name": "Mark All Read",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/notifications/read",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 success', () => pm.response.to.have.status(200));"
+          ] } }]
+        }
+      ]
+    },
+    {
+      "name": "7 · Webhooks (Paystack)",
       "item": [
         {
           "name": "Fund via Signed Webhook",
           "request": { "method": "POST", "url": "{{baseUrl}}/webhooks/paystack",
-            "description": "Signs with paystackKey from the ENVIRONMENT (pm.variables). Funds {{vaNumber}} ₦500. Needs vaNumber saved (run Dashboard first) and paystackKey matching backend/.env.",
+            "description": "Signs with paystackKey from the ENVIRONMENT (pm.variables). Funds {{vaNumber}} ₦500. No login needed — the signature IS the authority. Needs vaNumber saved (run Dashboard first) and paystackKey matching backend/.env. DVA not required — verification is local HMAC math.",
             "header": [
               { "key": "Content-Type", "value": "application/json" },
               { "key": "x-paystack-signature", "value": "{{webhookSig}}" }
@@ -222,7 +475,7 @@
         {
           "name": "Replay Same Webhook (duplicate)",
           "request": { "method": "POST", "url": "{{baseUrl}}/webhooks/paystack",
-            "description": "Same reference, re-signed → 200 'duplicate', balance UNCHANGED.",
+            "description": "Same reference, re-signed → 200 'duplicate', balance UNCHANGED (event-inbox dedup).",
             "header": [
               { "key": "Content-Type", "value": "application/json" },
               { "key": "x-paystack-signature", "value": "{{webhookSig}}" }
@@ -267,7 +520,75 @@
       ]
     },
     {
-      "name": "5 · Security Drills",
+      "name": "8 · User B (Tunde) — cross-user drills",
+      "item": [
+        {
+          "name": "B: Login (Tunde, step 1)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/auth/login",
+            "description": "Tunde = user 3 on a fresh DB (check the seed output for his ID). His OTP → console. Tokens save to B-variables — Ada's stay intact.",
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"tunde@test.com\",\n  \"password\": \"{{password}}\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 requiresOtp', () => pm.response.to.have.status(200));",
+            "const j = pm.response.json();",
+            "if (j.userId) pm.collectionVariables.set('bPendingUserId', j.userId);"
+          ] } }]
+        },
+        {
+          "name": "B: Verify Login OTP (saves B tokens)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/auth/verify-login-otp",
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": {{bPendingUserId}},\n  \"code\": \"REPLACE_ME\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 tokens', () => pm.response.to.have.status(200));",
+            "const j = pm.response.json();",
+            "pm.collectionVariables.set('bAccessToken', j.accessToken);",
+            "pm.collectionVariables.set('bRefreshToken', j.refreshToken);"
+          ] } }]
+        },
+        {
+          "name": "B: Submit KYC (Tunde must be VERIFIED to send)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/kyc/submit",
+            "description": "Tunde is seeded PENDING — the sender-side KYC gate requires VERIFIED before his transfer can succeed.",
+            "header": [{ "key": "Authorization", "value": "Bearer {{bAccessToken}}" }],
+            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 VERIFIED', () => pm.response.to.have.status(200));"
+          ] } }]
+        },
+        {
+          "name": "B: Cross-User Idempotency Drill (409)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/transfers/external",
+            "description": "SECURITY DRILL: Tunde reuses ADA'S idemExternal key → scoped replay check finds nothing for him, but the global backstop catches it → 409 'Idempotency key already in use'. No existence oracle, nothing moves. (Run Ada's External Transfer first. Burns one of Tunde's OTPs.)",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{bAccessToken}}" },
+              { "key": "Idempotency-Key", "value": "{{idemExternal}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"accountNumber\": \"1234567890\",\n  \"bankCode\": \"999\",\n  \"amountKobo\": 10000,\n  \"pin\": \"{{pin}}\",\n  \"otpCode\": \"REPLACE_ME\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('409 key collision', () => pm.response.to.have.status(409));"
+          ] } }]
+        },
+        {
+          "name": "B: Internal Transfer to Ada",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/transfers/internal",
+            "description": "Tunde → Ada: both ledger legs, both notifications, ascending-lock order. Tunde needs funds: Ada's earlier Internal Transfer gave him ₦100 (10000 kobo).",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{bAccessToken}}" },
+              { "key": "Idempotency-Key", "value": "idem-b-{{$timestamp}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"receiverId\": {{userId}},\n  \"amountKobo\": 5000,\n  \"pin\": \"{{pin}}\",\n  \"otpCode\": \"REPLACE_ME\",\n  \"narration\": \"B to A drill\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 successful', () => pm.response.to.have.status(200));"
+          ] } }]
+        }
+      ]
+    },
+    {
+      "name": "9 · Security Drills",
       "item": [
         {
           "name": "No Token → 401",
