@@ -1,4 +1,4 @@
-# ── Build stage: compile with Maven + JDK 17 ──
+# ── Build stage: compile with Maven on JDK 17 ──
 FROM maven:3.9-eclipse-temurin-17 AS build
 WORKDIR /app
 COPY pom.xml .
