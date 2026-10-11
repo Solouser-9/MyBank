@@ -1,0 +1,295 @@
+{
+  "info": {
+    "_postman_id": "8f3a1d64-6c2e-4f7a-9b1d-2f5a8c4e7d90",
+    "name": "MyBank API — Setup & Drills",
+    "description": "Setup + core drills for MyBank on a fresh machine.\n\nSETUP:\n1. Create an Environment (Environments panel → +) with variable `paystackKey` = the SAME sk_test key as backend/.env — and SELECT it top-right.\n2. Backend must be running on :8080.\n\nRUN ORDER:\nHealth → Login (OTP from server console) → Verify Login OTP (tokens auto-save) → Submit KYC (verifies user) → Dashboard (saves vaNumber) → then any drill.\n\nWebhooks need `paystackKey` set correctly, or signatures fail with 401.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" },
+    { "key": "email", "value": "ada@test.com" },
+    { "key": "password", "value": "password" },
+    { "key": "pin", "value": "1234" },
+    { "key": "receiverId", "value": "2" }
+  ],
+  "item": [
+    {
+      "name": "0 · Setup",
+      "item": [
+        {
+          "name": "Health",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/health",
+            "description": "No auth. Backend up + database reachable = 200 {status:ok}. Run this FIRST."
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 OK', () => pm.response.to.have.status(200));",
+            "pm.test('status ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+          ] } }]
+        }
+      ]
+    },
+    {
+      "name": "1 · Auth",
+      "item": [
+        {
+          "name": "Register (fresh user)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/auth/register",
+            "description": "Auto-generates a unique email/phone each run, so it never conflicts. Saves newUserId. The signup OTP prints in the server console — paste it into Verify OTP.",
+            "body": { "mode": "raw", "raw": "{\n  \"firstName\": \"Post\",\n  \"lastName\": \"Man\",\n  \"email\": \"{{regEmail}}\",\n  \"phone\": \"{{regPhone}}\",\n  \"password\": \"DrillPass1\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "const ts = Date.now();",
+              "pm.collectionVariables.set('regEmail', 'drill' + ts + '@test.local');",
+              "pm.collectionVariables.set('regPhone', '+23480' + String(ts).slice(-7));"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 registered', () => pm.response.to.have.status(200));",
+              "const j = pm.response.json();",
+              "if (j.userId) pm.collectionVariables.set('newUserId', j.userId);"
+            ] } }
+          ]
+        },
+        {
+          "name": "Verify OTP (signup)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/auth/verify-otp",
+            "description": "Replace REPLACE_ME with the signup OTP from the server console.",
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": {{newUserId}},\n  \"code\": \"REPLACE_ME\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 verified', () => pm.response.to.have.status(200));",
+            "pm.test('verified true', () => pm.expect(pm.response.json().verified).to.eql(true));"
+          ] } }]
+        },
+        {
+          "name": "Login (step 1 — password)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/auth/login",
+            "description": "Logs in Ada by default. Wrong password → 401 'Invalid details'. Triggers a login OTP → server console. To verify KYC for another user (e.g. Tunde), change the email here first — KYC verifies whoever's token is saved.",
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 requiresOtp', () => pm.response.to.have.status(200));",
+            "const j = pm.response.json();",
+            "if (j.userId) pm.collectionVariables.set('pendingUserId', j.userId);"
+          ] } }]
+        },
+        {
+          "name": "Verify Login OTP (saves tokens) ⭐",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/auth/verify-login-otp",
+            "description": "Paste the login OTP from the console. Auto-saves accessToken/refreshToken — every protected request below uses them.",
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": {{pendingUserId}},\n  \"code\": \"REPLACE_ME\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 tokens issued', () => pm.response.to.have.status(200));",
+            "const j = pm.response.json();",
+            "pm.collectionVariables.set('accessToken', j.accessToken);",
+            "pm.collectionVariables.set('refreshToken', j.refreshToken);",
+            "pm.collectionVariables.set('userId', j.userId);"
+          ] } }]
+        },
+        {
+          "name": "Refresh (rotation)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/auth/refresh",
+            "description": "Rotates the pair and auto-saves the NEW tokens. Re-running with the now-dead token = replay drill → 401.",
+            "body": { "mode": "raw", "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 rotated', () => pm.response.to.have.status(200));",
+            "const j = pm.response.json();",
+            "pm.collectionVariables.set('accessToken', j.accessToken);",
+            "pm.collectionVariables.set('refreshToken', j.refreshToken);"
+          ] } }]
+        }
+      ]
+    },
+    {
+      "name": "2 · Account",
+      "item": [
+        {
+          "name": "Submit KYC (verifies logged-in user) ⭐",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/kyc/submit",
+            "description": "Flips the LOGGED-IN user to KYC VERIFIED (unlocks money movement) and spawns VA issuance in the background. To verify a specific user: log in as THEM first, then run this. Run Dashboard afterwards to confirm the account number appears.",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 VERIFIED', () => pm.response.to.have.status(200));",
+            "pm.test('kyc VERIFIED', () => pm.expect(pm.response.json().kycStatus).to.eql('VERIFIED'));"
+          ] } }]
+        },
+        {
+          "name": "Dashboard (saves vaNumber) ⭐",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/me/dashboard",
+            "description": "Run after login. Saves your virtual account number (vaNumber) — required by the webhook drills. After KYC, re-run every few seconds until virtualAccount appears (background worker issues it).",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }]
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 dashboard', () => pm.response.to.have.status(200));",
+            "const j = pm.response.json();",
+            "if (j.virtualAccount) pm.collectionVariables.set('vaNumber', j.virtualAccount.account_number);",
+            "pm.test('hasPin flag present', () => pm.expect(j.user).to.have.property('hasPin'));"
+          ] } }]
+        }
+      ]
+    },
+    {
+      "name": "3 · Money Movement",
+      "item": [
+        {
+          "name": "Request OTP (transfer)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/otp/request",
+            "description": "OTP prints in the server console ([TEST OTP]). Limit: 3 per 15 min per purpose → 429 after. For a beneficiary-purpose OTP, change the body purpose to 'beneficiary'.",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "body": { "mode": "raw", "raw": "{\n  \"purpose\": \"transfer\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 otp sent', () => pm.response.to.have.status(200));"
+          ] } }]
+        },
+        {
+          "name": "Internal Transfer",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/transfers/internal",
+            "description": "Ada → user {{receiverId}} (Tunde = 2). RESENDING without regenerating = replay drill → 'already processed'.",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Idempotency-Key", "value": "idem-int-{{$timestamp}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"receiverId\": {{receiverId}},\n  \"amountKobo\": 10000,\n  \"pin\": \"{{pin}}\",\n  \"otpCode\": \"REPLACE_ME\",\n  \"narration\": \"postman drill\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 successful', () => pm.response.to.have.status(200));",
+            "pm.test('balanceAfter present', () => pm.expect(pm.response.json()).to.have.property('balanceAfter'));"
+          ] } }]
+        },
+        {
+          "name": "External Transfer",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/transfers/external",
+            "description": "Payout → pending. Fee ₦50 splits into pool:fees. Watchdog resolves the verdict.",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Idempotency-Key", "value": "idem-ext-{{$timestamp}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"accountNumber\": \"1234567890\",\n  \"bankCode\": \"999\",\n  \"amountKobo\": 10000,\n  \"pin\": \"{{pin}}\",\n  \"otpCode\": \"REPLACE_ME\",\n  \"narration\": \"postman drill\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 pending', () => pm.response.to.have.status(200));",
+            "pm.test('status pending', () => pm.expect(pm.response.json().status).to.eql('pending'));"
+          ] } }]
+        },
+        {
+          "name": "Pay Bill",
+          "request": { "method": "POST", "url": "{{baseUrl}}/api/bills/pay",
+            "description": "Mock biller confirms in seconds (watch the server console for [BillWorker]). Billers: airtime|data|electricity|tv|cable.",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Idempotency-Key", "value": "idem-bill-{{$timestamp}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"biller\": \"airtime\",\n  \"customerRef\": \"08030000000\",\n  \"amountKobo\": 10000,\n  \"pin\": \"{{pin}}\",\n  \"otpCode\": \"REPLACE_ME\"\n}", "options": { "raw": { "language": "json" } } }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 initiated', () => pm.response.to.have.status(200));"
+          ] } }]
+        }
+      ]
+    },
+    {
+      "name": "4 · Webhooks (Paystack)",
+      "item": [
+        {
+          "name": "Fund via Signed Webhook",
+          "request": { "method": "POST", "url": "{{baseUrl}}/webhooks/paystack",
+            "description": "Signs with paystackKey from the ENVIRONMENT (pm.variables). Funds {{vaNumber}} ₦500. Needs vaNumber saved (run Dashboard first) and paystackKey matching backend/.env.",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-paystack-signature", "value": "{{webhookSig}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{{webhookBody}}" }
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "const ref = 'PM-REF-' + Date.now();",
+              "pm.collectionVariables.set('webhookRef', ref);",
+              "const body = JSON.stringify({ event: 'charge.success', data: { reference: ref, amount: 50000, dedicated_account: { account_number: pm.variables.get('vaNumber') } } });",
+              "pm.collectionVariables.set('webhookBody', body);",
+              "pm.collectionVariables.set('webhookSig', CryptoJS.HmacSHA512(body, pm.variables.get('paystackKey')).toString());"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 received', () => pm.response.to.have.status(200));",
+              "pm.test('accepted', () => pm.expect(pm.response.json().status).to.eql('received'));"
+            ] } }
+          ]
+        },
+        {
+          "name": "Replay Same Webhook (duplicate)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/webhooks/paystack",
+            "description": "Same reference, re-signed → 200 'duplicate', balance UNCHANGED.",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-paystack-signature", "value": "{{webhookSig}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{{webhookBody}}" }
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "const ref = pm.variables.get('webhookRef');",
+              "const body = JSON.stringify({ event: 'charge.success', data: { reference: ref, amount: 50000, dedicated_account: { account_number: pm.variables.get('vaNumber') } } });",
+              "pm.collectionVariables.set('webhookBody', body);",
+              "pm.collectionVariables.set('webhookSig', CryptoJS.HmacSHA512(body, pm.variables.get('paystackKey')).toString());"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 duplicate', () => pm.response.to.have.status(200));",
+              "pm.test('deduped', () => pm.expect(pm.response.json().status).to.eql('duplicate'));"
+            ] } }
+          ]
+        },
+        {
+          "name": "Tampered Webhook (401 drill)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/webhooks/paystack",
+            "description": "Amount changed AFTER signing, signature kept → MUST be 401. A forged deposit cannot create balance.",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-paystack-signature", "value": "{{webhookSig}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{{webhookBody}}" }
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "const ref = pm.variables.get('webhookRef');",
+              "const body = JSON.stringify({ event: 'charge.success', data: { reference: ref, amount: 9900000, dedicated_account: { account_number: pm.variables.get('vaNumber') } } });",
+              "pm.collectionVariables.set('webhookBody', body);",
+              "// signature NOT recomputed — that is the tamper"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('401 rejected', () => pm.response.to.have.status(401));"
+            ] } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5 · Security Drills",
+      "item": [
+        {
+          "name": "No Token → 401",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/me/dashboard",
+            "description": "Deliberately NO Authorization header → 401. Middleware is the sole gate.",
+            "header": []
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('401 not 500', () => pm.response.to.have.status(401));"
+          ] } }]
+        },
+        {
+          "name": "Invalid Date → 400",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/transactions?from=banana&to=2026-01-01",
+            "description": "'banana' must 400 before reaching a ::date cast — never 500.",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }]
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('400 not 500', () => pm.response.to.have.status(400));"
+          ] } }]
+        }
+      ]
+    }
+  ]
+}
