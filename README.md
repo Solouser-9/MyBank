@@ -12,6 +12,31 @@ signed statements, spending analytics, and in-app notifications.
 
 ---
 
+## Live Deployment
+
+The full stack is deployed on free tiers and auto-deploys from GitHub:
+
+| Piece | Platform | URL |
+|---|---|---|
+| **Frontend** (React) | Vercel | https://my-bank-bice.vercel.app |
+| **Backend API** (Java) | Render | https://mybank-backend-jqa4.onrender.com |
+| **Database** | Neon (managed PostgreSQL) | (private — TLS connection) |
+
+**Health check:** https://mybank-backend-jqa4.onrender.com/api/health
+
+**Demo users (seeded automatically on first boot):**
+| User | Email | Password | PIN | KYC | Wallet |
+|---|---|---|---|---|---|
+| Ada Tester | `ada@test.com` | `Password123` | `1234` | VERIFIED | ₦5,000.00 |
+| Tunde Tester | `tunde@test.com` | `Password123` | `1234` | PENDING | ₦0.00 |
+
+In demo mode (`OTP_CHANNEL=console`) OTP codes print to the backend logs.
+
+**Free-tier note:** the backend sleeps after ~15 minutes idle; the first
+request takes ~50 seconds to wake it. Hit the health endpoint before demoing.
+
+---
+
 ## Tech Stack
 
 | Layer | Technology |
@@ -32,7 +57,7 @@ validation, charts, the test suite — is implemented from first principles.
 ## Architecture
 
 ```
-React frontend (localhost:5173)
+React frontend (Vercel)
         │  HTTPS + JSON, Bearer JWT, Idempotency-Key header
         ▼
 Middleware  ── every request passes ONE gate:
@@ -44,7 +69,7 @@ Router ──► Route handlers (auth, transfers, bills, queries,
         ▼
 Service layer (LedgerService, OtpService, PinService, JwtService)
         ▼
-PostgreSQL — 11 tables, constraint-enforced
+PostgreSQL (Neon) — 12 tables, constraint-enforced
 ```
 
 **Key architectural decisions:**
@@ -68,6 +93,10 @@ PostgreSQL — 11 tables, constraint-enforced
   `Provider` interface; a factory selects the mock or real Paystack
   adapter from configuration. Enabling live bank rails changes one config
   value, not code.
+- **Auto-seed, exactly once.** A `seed_marker` claim table (inserted in the
+  same transaction as the seed) guarantees demo data is created exactly
+  once per database — the server binds its port first, seeds after, and
+  later boots skip silently.
 
 ---
 
@@ -101,24 +130,17 @@ PostgreSQL — 11 tables, constraint-enforced
 | Node.js (LTS) + npm | `node -v` |
 | PostgreSQL 15+ | running locally |
 
-### 1. Create the `.gitignore` FIRST (before any commits)
+### 1. Create `.gitignore` (verify after cloning)
 
-The repo should carry this file — if it's missing after cloning, create
-`.gitignore` in the root:
+The repo must carry it — if missing after cloning, create `.gitignore` in
+the root:
 
 ```gitignore
-# Secrets — NEVER commit
 backend/.env
 .env
-
-# Build output
 backend/target/
 frontend/dist/
-
-# Dependencies (regenerable via npm install / mvn compile)
 frontend/node_modules/
-
-# IDE / OS
 .idea/
 *.iml
 .vscode/
@@ -126,12 +148,8 @@ frontend/node_modules/
 Thumbs.db
 ```
 
-Then confirm your secrets were never tracked:
-
-```bash
-git ls-files | grep "\.env$"
-# empty output = safe. If listed: git rm --cached backend/.env, rotate secrets.
-```
+Then confirm secrets were never tracked: `git ls-files | grep "\.env$"`
+must return nothing.
 
 ### 2. Database setup
 
@@ -143,8 +161,9 @@ GRANT ALL PRIVILEGES ON DATABASE banktest TO bankapp;
 GRANT ALL ON SCHEMA public TO bankapp;
 ```
 
-Run the schema (creates 11 tables, constraints, indexes — the final
-structure including transaction categories and statement-signing keys):
+Run the schema (creates 12 tables, constraints, indexes — the final
+structure including transaction categories, statement-signing keys, and
+the seed marker):
 
 ```bash
 psql -U bankapp -d banktest -f backend/src/main/resources/schema.sql
@@ -184,13 +203,18 @@ named cause.
 
 ```bash
 mvn clean compile
-mvn exec:java -Dexec.args="--seed"   # demo users — run once (idempotent)
-mvn exec:java                        # server on :8080
+mvn exec:java
 ```
 
-Demo users: `ada@test.com` / `password` (PIN `1234`, funded, verified) and
-`tunde@test.com` / `password` (PIN `1234`, pending KYC). In console mode,
-OTP codes print to this terminal.
+**Auto-seed:** on first boot the server seeds the demo users itself
+(guarded by a `seed_marker` claim row — exactly once per database,
+crash-safe). Later boots print `Seed marker found — skipping.` Demo users:
+`ada@test.com` / `Password123` (PIN `1234`, funded, verified) and
+`tunde@test.com` / `Password123` (PIN `1234`, pending KYC). In console
+mode, OTP codes print to this terminal.
+
+The backend is also **port-aware** (`PORT` env var, default 8080) for
+cloud deployment.
 
 ### 5. Run the frontend
 
@@ -200,7 +224,9 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-Vite proxies `/api` to `localhost:8080` in development.
+Vite proxies `/api` to `localhost:8080` in development. For deployed
+frontends, set the `VITE_API_URL` environment variable to the backend URL
+at build time.
 
 ### 6. Tests
 
@@ -219,14 +245,14 @@ classification (benign vs theft), OTP single-use. **6/6 passing.**
 
 A ready-made API collection ships with the repo:
 **`postman/MyBank.postman_collection.json`** — import it into Postman
-(**Import** → select the file) to explore and drill every endpoint with
-automatic assertions.
+(**Import** → select the file) to drill every endpoint with automatic
+assertions.
 
 **Setup:**
 
 1. Create an Environment (Environments panel → +) with:
    - `paystackKey` = the same `sk_test_...` key as `backend/.env`
-   - `baseUrl` = `http://localhost:8080`
+   - `baseUrl` = the backend URL (local or deployed)
 2. **Select the environment** (top-right dropdown)
 
 **Run order:**
@@ -266,6 +292,32 @@ local environment variables.
 
 ---
 
+## Deployment
+
+The production deployment uses three free-tier platforms, all auto-deploying
+from GitHub:
+
+| Piece | Platform | Notes |
+|---|---|---|
+| Frontend | **Vercel** | Env var `VITE_API_URL` = backend URL (baked in at build time) |
+| Backend | **Render** | Docker build (`backend/Dockerfile` — multi-stage Maven + JRE 17); port-aware (`PORT` env var); env vars carry all config |
+| Database | **Neon** | Managed PostgreSQL over TLS (`sslmode=require`) |
+
+**Configuration rules:**
+
+- Secrets live in platform environment variables, never in the repository
+  (`.gitignore` excludes `.env`)
+- `CORS_ORIGIN` on the backend must exactly match the deployed frontend URL
+- The backend binds `PORT` **before** slow startup work, so platform health
+  checks always succeed
+- The auto-seed is marker-guarded — it runs exactly once per database,
+  ever
+
+**Free-tier trade-off:** the Render backend sleeps after ~15 minutes idle
+and takes ~50 seconds to wake. Hit the health endpoint before demoing.
+
+---
+
 ## Security Highlights
 
 - Integer-kobo money math — no floating point in the money path
@@ -280,6 +332,7 @@ local environment variables.
 - Two-layer validation: server = source of truth, client = documented mirror
 - Append-only audit log (UPDATE/DELETE revoked at the database level)
 - Digitally signed statements (Ed25519, JDK-native) — tamper-evident
+- Multi-origin CORS allow-list support (exact-match, no wildcards)
 
 ## Known Limitations
 
@@ -289,6 +342,7 @@ local environment variables.
 - Statement-signing private keys are sealed with a config-derived key;
   production would use a KMS
 - Privacy features are deterrents — phone cameras defeat any web technique
+- Free-tier hosting: backend sleeps when idle (cold-start delay)
 
 ---
 
@@ -296,6 +350,7 @@ local environment variables.
 
 ```
 ├── backend/
+│   ├── Dockerfile                # multi-stage Maven build for Render
 │   ├── src/main/java/bank/       # flat package, ~30 classes
 │   │   ├── Main / Config / Db / Json / Crypto / Validate
 │   │   ├── Middleware / Router / JwtService / Audit
@@ -308,14 +363,14 @@ local environment variables.
 │   ├── src/main/resources/schema.sql
 │   └── pom.xml
 ├── frontend/
-│   ├── public/                   # favicon
 │   ├── src/components/           # Layout, ui kit, Select, charts/, guards
 │   ├── src/hooks/                # usePrivacy, useScrollFade
 │   ├── src/pages/                # 13 pages across four user journeys
 │   ├── src/utils/                # api.js gateway, validate mirrors, theme, motion
 │   └── index.css                 # design tokens + full component styles
-└── postman/
-    └── MyBank.postman_collection.json   # importable API drill suite
+├── postman/
+│   └── MyBank.postman_collection.json   # importable API drill suite
+└── system.properties             # JDK 17 pin for cloud builds
 ```
 
 ---
