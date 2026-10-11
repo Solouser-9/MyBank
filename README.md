@@ -363,6 +363,7 @@ and takes ~50 seconds to wake. Hit the health endpoint before demoing.
 │   ├── src/main/resources/schema.sql
 │   └── pom.xml
 ├── frontend/
+│   ├── public/                   # favicon set, SPA redirects
 │   ├── src/components/           # Layout, ui kit, Select, charts/, guards
 │   ├── src/hooks/                # usePrivacy, useScrollFade
 │   ├── src/pages/                # 13 pages across four user journeys
