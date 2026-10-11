@@ -76,12 +76,13 @@ public class Main {
             Scheduler.start();
 
 
-            HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
+            int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
+            HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
             server.setExecutor(Executors.newFixedThreadPool(10));
             server.createContext("/", Middleware::handle);
             server.start();
 
-            System.out.println("Server started on port 8080 (mode: " + (args.length > 0 ? args[0] : "server") + ")");
+            System.out.println("Server started on port " + port + " (mode: " + (args.length > 0 ? args[0] : "server") + ")");
 
         } catch (Exception e) {
             e.printStackTrace();
