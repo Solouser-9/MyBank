@@ -26,7 +26,7 @@ public class Seed {
                 }
                 Db.update(c, "INSERT INTO seed_marker (id) VALUES (TRUE)");
 
-                String pass = BCrypt.hashpw("password", BCrypt.gensalt());
+                String pass = BCrypt.hashpw("Password123", BCrypt.gensalt());
                 String pin = BCrypt.hashpw("1234", BCrypt.gensalt());
 
                 Db.update(c, "INSERT INTO users (first_name, last_name, email, password_hash, pin_hash, kyc_status) VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING",
@@ -48,7 +48,7 @@ public class Seed {
 
                 String realEmail = Config.getOptional("TEST_REAL_EMAIL");
                 if (realEmail != null && !realEmail.isBlank()) {
-                    String realPass = BCrypt.hashpw("password", BCrypt.gensalt());
+                    String realPass = BCrypt.hashpw("Password123", BCrypt.gensalt());
                     String realPin = BCrypt.hashpw("1234", BCrypt.gensalt());
                     Db.update(c, "INSERT INTO users (first_name, last_name, email, phone, password_hash, pin_hash, kyc_status) VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
                             "Zainab", "Tester", realEmail, "+2348012345699", realPass, realPin, "PENDING");
