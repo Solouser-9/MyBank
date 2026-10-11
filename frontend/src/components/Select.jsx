@@ -1,12 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 
-
-
-
-
-
-
-
 export default function Select({ value, onChange, options, placeholder = 'Select…', className = '', disabled = false, ariaLabel }) {
 
     const [open, setOpen] = useState(false);

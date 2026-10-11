@@ -48,6 +48,15 @@ public class Middleware {
                 return;
             }
 
+            // HEAD requests (health/platform probes): respond with headers
+            // only — writing a body to a HEAD exchange makes the JDK server
+            // throw (the "stream closed" traces in the Render logs).
+            if (method.equalsIgnoreCase("HEAD")) {
+                ex.sendResponseHeaders(200, -1);
+                ex.close();
+                return;
+            }
+
 
             String routeKey = method + " " + path;
             if (!Router.routes.containsKey(routeKey)) {
