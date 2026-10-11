@@ -101,7 +101,39 @@ PostgreSQL — 11 tables, constraint-enforced
 | Node.js (LTS) + npm | `node -v` |
 | PostgreSQL 15+ | running locally |
 
-### 1. Database setup
+### 1. Create the `.gitignore` FIRST (before any commits)
+
+The repo should carry this file — if it's missing after cloning, create
+`.gitignore` in the root:
+
+```gitignore
+# Secrets — NEVER commit
+backend/.env
+.env
+
+# Build output
+backend/target/
+frontend/dist/
+
+# Dependencies (regenerable via npm install / mvn compile)
+frontend/node_modules/
+
+# IDE / OS
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
+```
+
+Then confirm your secrets were never tracked:
+
+```bash
+git ls-files | grep "\.env$"
+# empty output = safe. If listed: git rm --cached backend/.env, rotate secrets.
+```
+
+### 2. Database setup
 
 ```sql
 CREATE DATABASE banktest;
@@ -118,7 +150,15 @@ structure including transaction categories and statement-signing keys):
 psql -U bankapp -d banktest -f backend/src/main/resources/schema.sql
 ```
 
-### 2. Backend configuration
+Grant the app user its table rights (tables are created by the superuser):
+
+```sql
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO bankapp;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO bankapp;
+REVOKE UPDATE, DELETE ON audit_logs FROM bankapp;  -- audit log: insert-only for the app
+```
+
+### 3. Backend configuration
 
 ```bash
 cd backend
@@ -140,7 +180,7 @@ cp .env.example .env    # then fill in the values
 Boot is **fail-fast**: any missing or invalid value stops startup with a
 named cause.
 
-### 3. Run the backend
+### 4. Run the backend
 
 ```bash
 mvn clean compile
@@ -152,7 +192,7 @@ Demo users: `ada@test.com` / `password` (PIN `1234`, funded, verified) and
 `tunde@test.com` / `password` (PIN `1234`, pending KYC). In console mode,
 OTP codes print to this terminal.
 
-### 4. Run the frontend
+### 5. Run the frontend
 
 ```bash
 cd ../frontend
@@ -162,7 +202,7 @@ npm run dev        # http://localhost:5173
 
 Vite proxies `/api` to `localhost:8080` in development.
 
-### 5. Tests
+### 6. Tests
 
 ```bash
 cd backend
@@ -194,14 +234,13 @@ automatic assertions.
 1. **Health** — backend + DB reachable
 2. **Login** → paste the OTP from the server console → **Verify Login OTP**
    (tokens auto-save for all subsequent requests)
-3. **Dashboard** — saves your virtual account number
-4. **Submit KYC** — verifies the logged-in user (flips status, issues the
-   account number)
-5. **Money movement** — Request OTP → Internal/External transfer, Pay Bill
+3. **Submit KYC** — verifies the logged-in user (flips status, issues the
+   account number); re-run **Dashboard** until the VA appears
+4. **Money movement** — Request OTP → Internal/External transfer, Pay Bill
    (resend the same request = idempotent replay drill → "already processed")
-6. **Webhooks** — Fund (signed deposit), Replay ("duplicate"), Tampered
+5. **Webhooks** — Fund (signed deposit), Replay ("duplicate"), Tampered
    (401) — signatures computed inside Postman from your `paystackKey`
-7. **Security drills** — no-token 401, invalid-date 400, cross-user checks
+6. **Security drills** — no-token 401, invalid-date 400
 
 The collection contains no secrets — the Paystack key lives only in your
 local environment variables.
