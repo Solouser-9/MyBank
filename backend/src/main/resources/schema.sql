@@ -16,6 +16,10 @@ CREATE TABLE users (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE seed_marker (
+  id BOOLEAN PRIMARY KEY,
+  seeded_at TIMESTAMPTZ DEFAULT now()
+);
 
 CREATE TABLE wallets (
   user_id BIGINT PRIMARY KEY REFERENCES users(id),

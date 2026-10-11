@@ -1,3 +1,4 @@
+const API_BASE = import.meta.env.VITE_API_URL || '';
 // LAYER 3: UUID fallback: use crypto.randomUUID when available, with a fallback for non-secure LAN demos.
 
 const uuid = () =>
@@ -23,7 +24,7 @@ export const request = async (path, { method = 'GET', body, headers = {}, auth =
             if (token) reqHeaders['Authorization'] = `Bearer ${token}`;
         }
 
-        const res = await fetch(`/api${path}`, {
+        const res = await fetch(`${API_BASE}/api${path}`, {
             method,
             headers: reqHeaders,
             body: body ? JSON.stringify(body) : undefined
@@ -53,7 +54,7 @@ export const request = async (path, { method = 'GET', body, headers = {}, auth =
                     try {
                         const rt = localStorage.getItem('refreshToken');
                         if (!rt) throw new Error("No refresh token");
-                        const res = await fetch('/api/auth/refresh', {
+                        const res = await fetch(`${API_BASE}/api/auth/refresh`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ refreshToken: rt })
