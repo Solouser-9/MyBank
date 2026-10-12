@@ -29,9 +29,11 @@ public class Seed {
                 String pass = BCrypt.hashpw("Password123", BCrypt.gensalt());
                 String pin = BCrypt.hashpw("1234", BCrypt.gensalt());
 
+                // Real, receivable email addresses — in email mode, each user's
+                // OTPs are delivered to their own inbox.
                 Db.update(c, "INSERT INTO users (first_name, last_name, email, password_hash, pin_hash, kyc_status) VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING",
-                        "Ada", "Tester", "ada@test.com", pass, pin, "VERIFIED");
-                long adaId = Db.scalar(c, "SELECT id FROM users WHERE email=?", "ada@test.com");
+                        "Ada", "Tester", "bakareabdussalam5@gmail.com", pass, pin, "VERIFIED");
+                long adaId = Db.scalar(c, "SELECT id FROM users WHERE email=?", "bakareabdussalam5@gmail.com");
 
                 if (!Db.exists(c, "SELECT 1 FROM wallets WHERE user_id = ?", adaId)) {
                     Db.update(c, "INSERT INTO wallets (user_id, balance_kobo) VALUES (?, ?)", adaId, 500000);
@@ -42,25 +44,14 @@ public class Seed {
                 }
 
                 Db.update(c, "INSERT INTO users (first_name, last_name, email, password_hash, pin_hash, kyc_status) VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING",
-                        "Tunde", "Tester", "tunde@test.com", pass, pin, "PENDING");
-                long tundeId = Db.scalar(c, "SELECT id FROM users WHERE email=?", "tunde@test.com");
+                        "Tunde", "Tester", "abdussalambakare7@gmail.com", pass, pin, "PENDING");
+                long tundeId = Db.scalar(c, "SELECT id FROM users WHERE email=?", "abdussalambakare7@gmail.com");
                 Db.update(c, "INSERT INTO wallets (user_id, balance_kobo) VALUES (?, ?) ON CONFLICT DO NOTHING", tundeId, 0);
-
-                String realEmail = Config.getOptional("TEST_REAL_EMAIL");
-                if (realEmail != null && !realEmail.isBlank()) {
-                    String realPass = BCrypt.hashpw("Password123", BCrypt.gensalt());
-                    String realPin = BCrypt.hashpw("1234", BCrypt.gensalt());
-                    Db.update(c, "INSERT INTO users (first_name, last_name, email, phone, password_hash, pin_hash, kyc_status) VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
-                            "Zainab", "Tester", realEmail, "+2348012345699", realPass, realPin, "PENDING");
-                    long zid = Db.scalar(c, "SELECT id FROM users WHERE email=?", realEmail);
-                    Db.update(c, "INSERT INTO wallets (user_id, balance_kobo) VALUES (?, 0) ON CONFLICT DO NOTHING", zid);
-                    System.out.println("Zainab Tester (" + realEmail + ") ID: " + zid + ", PIN: 1234, Wallet: 0 kobo");
-                }
 
                 c.commit();
                 System.out.println("Seed complete.");
-                System.out.println("Ada Tester (ada@test.com) ID: " + adaId + ", PIN: 1234, Wallet: 500000 kobo");
-                System.out.println("Tunde Tester (tunde@test.com) ID: " + tundeId + ", PIN: 1234, Wallet: 0 kobo");
+                System.out.println("Ada Tester (bakareabdussalam5@gmail.com) ID: " + adaId + ", PIN: 1234, Wallet: 500000 kobo");
+                System.out.println("Tunde Tester (abdussalambakare7@gmail.com) ID: " + tundeId + ", PIN: 1234, Wallet: 0 kobo");
             } catch (Exception e) {
                 c.rollback();
                 throw e;
