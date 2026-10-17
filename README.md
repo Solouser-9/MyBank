@@ -24,12 +24,12 @@ The full stack is deployed on free tiers and auto-deploys from GitHub:
 
 **Health check:** https://mybank-backend-jqa4.onrender.com/api/health
 
-**Demo users (seeded automatically on first boot):**
-| User | Email | Password | PIN | KYC | Wallet |
-|---|---|---|---|---|---|
-| Ada Tester | `ada@test.com` | `Password123` | `1234` | VERIFIED | ₦5,000.00 |
-| Tunde Tester | `tunde@test.com` | `Password123` | `1234` | PENDING | ₦0.00 |
-
+**Demo users (seeded once per database):** Ada Tester (VERIFIED, ₦5,000.00)
+and Tunde Tester (PENDING, ₦0.00). Both use password `Password123` and PIN
+`1234`. Use the email addresses defined in `backend/src/main/java/bank/Seed.java`;
+the `ada@test.com` and `tunde@test.com` values in the Postman collection are
+placeholders and do not match the seeded accounts. User IDs are database
+specific; check the seed output and set the Postman `receiverId` accordingly.
 In demo mode (`OTP_CHANNEL=console`) OTP codes print to the backend logs.
 
 **Free-tier note:** the backend sleeps after ~15 minutes idle; the first
@@ -44,7 +44,7 @@ request takes ~50 seconds to wake it. Hit the health endpoint before demoing.
 | **Frontend** | React 18, Vite, React Router v6, React Icons, hand-rolled SVG charts, CSS-variable design system (light/dark) |
 | **Backend** | Java 17, JDK built-in HttpServer (no Spring), Maven, HikariCP connection pool, Jackson, JJWT, jBCrypt |
 | **Database** | PostgreSQL — money as BIGINT kobo, double-entry ledger, constraint-enforced statuses, append-only audit log |
-| **Payments** | Provider seam — mock adapter (default) / real Paystack adapter (awaiting DVA enablement) |
+| **Payments** | Mock provider by default; partial real Paystack adapter for account/bank operations and external transfers, subject to account activation and further production work |
 | **Email** | Brevo for OTP delivery (console fallback in demo mode) |
 
 **Dependency principle:** libraries are used only where hand-rolling would
@@ -89,10 +89,11 @@ PostgreSQL (Neon) — 12 tables, constraint-enforced
   the status flip itself is the lock, so concurrent requests can never
   double-consume or double-refund. Verified by a test suite that races
   real threads against each claim.
-- **Provider seam.** All external payment operations go through a
-  `Provider` interface; a factory selects the mock or real Paystack
-  adapter from configuration. Enabling live bank rails changes one config
-  value, not code.
+- **Provider seam.** Account provisioning, bank lookup/resolution, and
+  external bank transfers use the `Provider` interface; configuration selects
+  the mock or partial real Paystack adapter. Bill payments currently use a
+  separate test adapter. Selecting `PROVIDER=real` does not make every
+  payment feature live; see [`PAYSTACK-LIVE-MONEY.md`](PAYSTACK-LIVE-MONEY.md).
 - **Auto-seed, exactly once.** A `seed_marker` claim table (inserted in the
   same transaction as the seed) guarantees demo data is created exactly
   once per database — the server binds its port first, seeds after, and
@@ -107,10 +108,10 @@ PostgreSQL (Neon) — 12 tables, constraint-enforced
 | **Registration + email OTP** | Server-side validation, BCrypt-hashed password, 6-digit code stored as SHA-256 hash + secret pepper, 10-min expiry, single-use atomic claim, rate-limited |
 | **Two-step login** | Password + one-time code. Issues a 15-min signed access token and a 30-day hashed refresh token that rotates on every use — reuse of an old token is detected (grace window for concurrent tabs; aged reuse is treated as theft: all sessions killed) |
 | **Transaction PIN** | 4–6 digit, bcrypt-hashed, required for every payment; SQL-side attempt counter with 15-min lockout after 5 wrong tries |
-| **KYC → account number** | Verification unlocks money movement and issues a personal account number (background worker; mock in demo, real Paystack adapter ready behind the same interface) |
+| **KYC → account number** | Demo KYC currently marks the signed-in user verified; account issuance runs in a background worker through the mock or partial Paystack adapter. This is not a real identity-verification workflow. |
 | **Wallet funding** | Paystack webhooks verified with HMAC-SHA512 over raw bytes, deduplicated via a UNIQUE event inbox — forged or replayed deposits cannot credit twice |
 | **Transfers** | Internal (instant) and external (pending → provider verdict by webhook or watchdog chase, automatic reversal on failure). Every payment carries a client-minted idempotency key; the server refuses duplicates before consuming credentials |
-| **Bill payments** | Airtime, data, electricity, TV, cable — same security ceremony; rejected payments auto-reverse |
+| **Bill payments** | Demo flows for airtime, data, electricity, TV, and cable use a test adapter; rejected requests auto-reverse. No live biller integration is selected by `PROVIDER`. |
 | **History & statements** | Server-side filtering with parameterized SQL and calendar-validated dates; paginated; CSV statements with derived opening/closing balances, **signed with the user's personal Ed25519 key** — tamper-evident and verifiable via an API endpoint |
 | **Insights** | Hand-rolled SVG charts: balance trend, in-vs-out bars, cash-flow waterfall of real observed balances, spending donut grouped by a schema-enforced category column |
 | **Notifications** | Written in the same database transaction as the money event they describe; unread badge, day-grouped list, per-user read endpoints |
@@ -130,28 +131,7 @@ PostgreSQL (Neon) — 12 tables, constraint-enforced
 | Node.js (LTS) + npm | `node -v` |
 | PostgreSQL 15+ | running locally |
 
-### 1. Create `.gitignore` (verify after cloning)
-
-The repo must carry it — if missing after cloning, create `.gitignore` in
-the root:
-
-```gitignore
-backend/.env
-.env
-backend/target/
-frontend/dist/
-frontend/node_modules/
-.idea/
-*.iml
-.vscode/
-.DS_Store
-Thumbs.db
-```
-
-Then confirm secrets were never tracked: `git ls-files | grep "\.env$"`
-must return nothing.
-
-### 2. Database setup
+### 1. Database setup
 
 ```sql
 CREATE DATABASE banktest;
@@ -169,7 +149,7 @@ the seed marker):
 psql -U bankapp -d banktest -f backend/src/main/resources/schema.sql
 ```
 
-Grant the app user its table rights (tables are created by the superuser):
+If a superuser created the tables, grant the app user its table rights:
 
 ```sql
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO bankapp;
@@ -177,46 +157,62 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO bankapp;
 REVOKE UPDATE, DELETE ON audit_logs FROM bankapp;  -- audit log: insert-only for the app
 ```
 
-### 3. Backend configuration
+### 2. Backend configuration
 
 ```bash
 cd backend
-cp .env.example .env    # then fill in the values
+```
+
+Copy the template to `.env`, then fill in your database credentials and
+secrets. The comments in `backend/.env.example` explain each variable and
+which settings are optional. Keep real secrets out of version control
+(`.gitignore` excludes `.env` files).
+
+```powershell
+Copy-Item .env.example .env
 ```
 
 | Variable | Purpose |
 |---|---|
-| `DB_URL` / `DB_USER` / `DB_PASS` | PostgreSQL connection |
-| `JWT_SECRET` | ≥32 chars — signs access tokens (`openssl rand -hex 32`) |
-| `OTP_PEPPER` | different random string — mixed into OTP/refresh hashes |
-| `PAYSTACK_SECRET_KEY` | test key — webhook HMAC verification |
-| `TRANSFER_CAP_KOBO` / `FEE_KOBO` | per-transfer cap / external payout fee |
-| `CORS_ORIGIN` | allowed frontend origin |
-| `OTP_CHANNEL` | `email` (Brevo) or anything else (console — demo mode) |
-| `BREVO_API_KEY`, `BREVO_SENDER_EMAIL` | required only when OTP_CHANNEL=email |
-| `PROVIDER` | `mock` (default) / `real` (Paystack, needs DVA) |
+| `DB_URL`, `DB_USER`, `DB_PASS` | PostgreSQL JDBC URL and database credentials |
+| `JWT_SECRET` | Random signing secret for JWT access tokens; at least 32 characters |
+| `OTP_PEPPER` | Separate secret mixed into OTP and refresh-token hashes |
+| `PAYSTACK_SECRET_KEY` | Verifies Paystack webhook signatures; required even with the mock provider |
+| `TRANSFER_CAP_KOBO`, `FEE_KOBO` | Maximum transfer amount and external transfer fee, both in kobo |
+| `CORS_ORIGIN` | Exact browser frontend origin allowed by the API |
+| `OTP_CHANNEL` | `email` sends OTPs through Brevo; `console` prints OTPs to backend logs |
+| `BREVO_API_KEY`, `BREVO_SENDER_EMAIL` | Brevo credentials, required only when `OTP_CHANNEL=email` |
+| `PROVIDER` | `mock` (default) or `real` to select the payment-provider adapter |
 
-Boot is **fail-fast**: any missing or invalid value stops startup with a
-named cause.
+The backend requires `DB_URL`, `DB_USER`, `DB_PASS`, `JWT_SECRET`,
+`OTP_PEPPER`, `PAYSTACK_SECRET_KEY`, `TRANSFER_CAP_KOBO`, `FEE_KOBO`,
+`CORS_ORIGIN`, and `OTP_CHANNEL`. `PAYSTACK_SECRET_KEY` is required even in
+mock mode because the webhook endpoint uses it to validate signatures.
+`BREVO_API_KEY` and `BREVO_SENDER_EMAIL` are required only with
+`OTP_CHANNEL=email`. `PROVIDER` is optional and defaults to `mock`. `PORT`
+is read from the process environment (not `.env`) and defaults to `8080`.
+Fill in every blank required value and use test-only credentials for local
+development, never production secrets. Boot is **fail-fast**: missing
+required configuration or a short JWT secret stops startup.
 
-### 4. Run the backend
+### 3. Run the backend
 
 ```bash
 mvn clean compile
 mvn exec:java
 ```
 
-**Auto-seed:** on first boot the server seeds the demo users itself
-(guarded by a `seed_marker` claim row — exactly once per database,
-crash-safe). Later boots print `Seed marker found — skipping.` Demo users:
-`ada@test.com` / `Password123` (PIN `1234`, funded, verified) and
-`tunde@test.com` / `Password123` (PIN `1234`, pending KYC). In console
-mode, OTP codes print to this terminal.
+**Auto-seed:** on first boot the server seeds Ada Tester (VERIFIED, ₦5,000)
+and Tunde Tester (PENDING, ₦0), both with password `Password123` and PIN
+`1234`. Their email addresses are defined in `Seed.java`; the user IDs are
+printed when seeding succeeds. A `seed_marker` guarantees seeding happens
+once per database, crash-safe; later boots print `Seed marker found —
+skipping.` In console mode, OTP codes print to this terminal.
 
 The backend is also **port-aware** (`PORT` env var, default 8080) for
 cloud deployment.
 
-### 5. Run the frontend
+### 4. Run the frontend
 
 ```bash
 cd ../frontend
@@ -224,11 +220,11 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-Vite proxies `/api` to `localhost:8080` in development. For deployed
-frontends, set the `VITE_API_URL` environment variable to the backend URL
-at build time.
+Vite proxies `/api` and `/webhooks` to `localhost:8080` in development. For
+deployed frontends, set the `VITE_API_URL` environment variable to the
+backend URL at build time.
 
-### 6. Tests
+### 5. Tests
 
 ```bash
 cd backend
@@ -243,44 +239,24 @@ classification (benign vs theft), OTP single-use. **6/6 passing.**
 
 ## Postman Collection
 
-A ready-made API collection ships with the repo:
-**`postman/MyBank.postman_collection.json`** — import it into Postman
-(**Import** → select the file) to drill every endpoint with automatic
-assertions.
-
-**Setup:**
-
-1. Create an Environment (Environments panel → +) with:
-   - `paystackKey` = the same `sk_test_...` key as `backend/.env`
-   - `baseUrl` = the backend URL (local or deployed)
-2. **Select the environment** (top-right dropdown)
-
-**Run order:**
-
-1. **Health** — backend + DB reachable
-2. **Login** → paste the OTP from the server console → **Verify Login OTP**
-   (tokens auto-save for all subsequent requests)
-3. **Submit KYC** — verifies the logged-in user (flips status, issues the
-   account number); re-run **Dashboard** until the VA appears
-4. **Money movement** — Request OTP → Internal/External transfer, Pay Bill
-   (resend the same request = idempotent replay drill → "already processed")
-5. **Webhooks** — Fund (signed deposit), Replay ("duplicate"), Tampered
-   (401) — signatures computed inside Postman from your `paystackKey`
-6. **Security drills** — no-token 401, invalid-date 400
-
-The collection contains no secrets — the Paystack key lives only in your
-local environment variables.
+The API collection is `postman/MyBank.postman_collection.json`. Import it
+into Postman, then follow the setup, ordered workflows, and drill notes in
+[`postman/README.md`](postman/README.md). The guide covers environment
+configuration, OTPs and automatically saved tokens, payment idempotency,
+webhook signatures, statements, cross-user checks, and troubleshooting.
 
 ---
 
 ## API Overview
 
-26 routes under `/api` (all JSON, JWT-protected except auth + health):
+27 routes under `/api` plus the Paystack webhook route (all JSON,
+JWT-protected except public auth steps, health, and webhook):
 
 | Group | Endpoints |
 |---|---|
+| Health | `GET /api/health` |
 | Auth | register, verify-otp, login, verify-login-otp, refresh, logout, set-pin, change-password |
-| KYC | submit (verification + async account-number issuance) |
+| KYC | submit (marks the signed-in user verified and starts account-number issuance) |
 | OTP | request (purpose-tagged: transfer / beneficiary) |
 | Transfers | internal, external |
 | Bills | pay |
@@ -288,7 +264,7 @@ local environment variables.
 | Beneficiaries | list, add (OTP-gated), resolve MyBank account |
 | Queries | dashboard, transactions (filters + pagination), statements (signed CSV), analytics, statement verification |
 | Notifications | list, mark-all-read, read-one (user-scoped) |
-| Webhooks | `/webhooks/paystack` (HMAC-SHA512 verified, event-inbox deduplicated) |
+| Webhooks | `POST /webhooks/paystack` (HMAC-SHA512 verified, event-inbox deduplicated; outside `/api`) |
 
 ---
 
@@ -332,12 +308,14 @@ and takes ~50 seconds to wake. Hit the health endpoint before demoing.
 - Two-layer validation: server = source of truth, client = documented mirror
 - Append-only audit log (UPDATE/DELETE revoked at the database level)
 - Digitally signed statements (Ed25519, JDK-native) — tamper-evident
-- Multi-origin CORS allow-list support (exact-match, no wildcards)
+- Exact-origin CORS response configured with `CORS_ORIGIN` (not a multi-origin allow-list)
 
 ## Known Limitations
 
 - KYC verification is simulated (real flow gated the same way)
-- Real Paystack bank rails are written but pending DVA enablement
+- Paystack DVA/Transfers integrations are incomplete for live customer funds
+- Live-money integration requirements and current codebase limitations are
+  documented in [`PAYSTACK-LIVE-MONEY.md`](PAYSTACK-LIVE-MONEY.md)
 - Rate limiter is in-memory — multi-instance deployments need a shared store
 - Statement-signing private keys are sealed with a config-derived key;
   production would use a KMS
@@ -366,11 +344,13 @@ and takes ~50 seconds to wake. Hit the health endpoint before demoing.
 │   ├── public/                   # favicon set, SPA redirects
 │   ├── src/components/           # Layout, ui kit, Select, charts/, guards
 │   ├── src/hooks/                # usePrivacy, useScrollFade
-│   ├── src/pages/                # 13 pages across four user journeys
-│   ├── src/utils/                # api.js gateway, validate mirrors, theme, motion
+│   ├── src/pages/                # 15 page components
+│   ├── src/api.js                # API gateway
+│   ├── src/utils/                # format, validation mirrors, theme, motion
 │   └── index.css                 # design tokens + full component styles
 ├── postman/
 │   └── MyBank.postman_collection.json   # importable API drill suite
+├── PAYSTACK-LIVE-MONEY.md        # DVA/Transfers scope and live-money limitations
 └── system.properties             # JDK 17 pin for cloud builds
 ```
 
